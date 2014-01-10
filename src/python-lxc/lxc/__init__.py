@@ -18,7 +18,8 @@
 #
 # You should have received a copy of the GNU Lesser General Public
 # License along with this library; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301
+# USA
 #
 
 import _lxc
@@ -149,58 +150,12 @@ class Container(_lxc.Container):
             Creates a new Container instance.
         """
 
-        if os.geteuid() != 0:
-            raise Exception("Running as non-root.")
-
         if config_path:
             _lxc.Container.__init__(self, name, config_path)
         else:
             _lxc.Container.__init__(self, name)
 
         self.network = ContainerNetworkList(self)
-
-    def add_device_node(self, path, destpath=None):
-        """
-            Add block/char device to running container.
-        """
-
-        if not self.running:
-            return False
-
-        if not destpath:
-            destpath = path
-
-        if not os.path.exists(path):
-            return False
-
-        # Lookup the source
-        path_stat = os.stat(path)
-        mode = stat.S_IMODE(path_stat.st_mode)
-
-        # Allow the target
-        if stat.S_ISBLK(path_stat.st_mode):
-            self.set_cgroup_item("devices.allow",
-                                 "b %s:%s rwm" %
-                                 (int(path_stat.st_rdev / 256),
-                                  int(path_stat.st_rdev % 256)))
-        elif stat.S_ISCHR(path_stat.st_mode):
-            self.set_cgroup_item("devices.allow",
-                                 "c %s:%s rwm" %
-                                 (int(path_stat.st_rdev / 256),
-                                  int(path_stat.st_rdev % 256)))
-
-        # Create the target
-        rootfs = "/proc/%s/root/" % self.init_pid
-        container_path = "%s/%s" % (rootfs, destpath)
-
-        if os.path.exists(container_path):
-            os.remove(container_path)
-
-        os.mknod(container_path, path_stat.st_mode, path_stat.st_rdev)
-        os.chmod(container_path, mode)
-        os.chown(container_path, 0, 0)
-
-        return True
 
     def add_device_net(self, name, destname=None):
         """
@@ -346,7 +301,6 @@ class Container(_lxc.Container):
 
         return _lxc.Container.get_interfaces(self)
 
-
     def get_ips(self, interface=None, family=None, scope=None, timeout=0):
         """
             Get a tuple of IPs for the container.
@@ -430,6 +384,8 @@ def list_containers(active=True, defined=True,
     """
 
     if config_path:
+        if not os.path.exists(config_path):
+            return tuple()
         entries = _lxc.list_containers(active=active, defined=defined,
                                        config_path=config_path)
     else:
@@ -456,6 +412,7 @@ def attach_run_command(cmd):
     else:
         return _lxc.attach_run_command((cmd, [cmd]))
 
+
 def attach_run_shell():
     """
         Run a shell when attaching
@@ -465,6 +422,7 @@ def attach_run_shell():
         of a container.
     """
     return _lxc.attach_run_shell(None)
+
 
 def arch_to_personality(arch):
     """
@@ -496,7 +454,6 @@ LXC_ATTACH_REMOUNT_PROC_SYS = _lxc.LXC_ATTACH_REMOUNT_PROC_SYS
 LXC_ATTACH_SET_PERSONALITY = _lxc.LXC_ATTACH_SET_PERSONALITY
 
 # clone: clone flags
-LXC_CLONE_COPYHOOKS = _lxc.LXC_CLONE_COPYHOOKS
 LXC_CLONE_KEEPMACADDR = _lxc.LXC_CLONE_KEEPMACADDR
 LXC_CLONE_KEEPNAME = _lxc.LXC_CLONE_KEEPNAME
 LXC_CLONE_SNAPSHOT = _lxc.LXC_CLONE_SNAPSHOT

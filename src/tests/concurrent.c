@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
 #define _GNU_SOURCE
 #include <getopt.h>
 
@@ -31,7 +33,7 @@ static int quiet = 0;
 static int delay = 0;
 static const char *template = "busybox";
 
-static struct option options[] = {
+static const struct option options[] = {
     { "threads",     required_argument, NULL, 'j' },
     { "iterations",  required_argument, NULL, 'i' },
     { "template",    required_argument, NULL, 't' },
@@ -61,7 +63,7 @@ static void usage(void) {
 struct thread_args {
     int thread_id;
     int return_code;
-    char *mode;
+    const char *mode;
 };
 
 static void do_function(void *arguments)
@@ -160,7 +162,7 @@ int main(int argc, char *argv[]) {
             quiet = 1;
             break;
         case 'm': {
-            char *mode_tok, *tok, *saveptr;
+            char *mode_tok, *tok, *saveptr = NULL;
 
             modes = NULL;
             for (i = 0, mode_tok = optarg;

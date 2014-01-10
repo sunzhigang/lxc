@@ -40,10 +40,11 @@
 #include <netinet/in.h>
 #include <net/if.h>
 
+#include <lxc/lxccontainer.h>
+
 #include "log.h"
 #include "caps.h"
 #include "lxc.h"
-#include <lxc/lxccontainer.h>
 #include "conf.h"
 #include "cgroup.h"
 #include "utils.h"
@@ -334,6 +335,7 @@ int main(int argc, char *argv[])
 			goto out;
 		}
 		fclose(pid_fp);
+		pid_fp = NULL;
 	}
 
 	if (my_args.close_all_fds)
@@ -346,6 +348,8 @@ int main(int argc, char *argv[])
 
 out:
 	lxc_container_put(c);
+	if (pid_fp)
+		fclose(pid_fp);
 	return err;
 }
 

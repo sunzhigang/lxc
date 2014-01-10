@@ -45,11 +45,9 @@
 #include "conf.h"
 #include "utils.h"
 #include "bdev.h"
-#include "lxclock.h"
-
-#include <lxc/log.h>
-#include <lxc/cgroup.h>
-#include <lxc/start.h>
+#include "log.h"
+#include "cgroup.h"
+#include "start.h"
 
 #if IS_BIONIC
 #include <../include/lxcmntent.h>
@@ -118,9 +116,7 @@ static bool find_cgroup_subsystems(char ***kernel_subsystems)
 	size_t kernel_subsystems_capacity = 0;
 	int r;
 
-	process_lock();
 	proc_cgroups = fopen_cloexec("/proc/cgroups", "r");
-	process_unlock();
 	if (!proc_cgroups)
 		return false;
 
@@ -160,9 +156,7 @@ static bool find_cgroup_subsystems(char ***kernel_subsystems)
 	bret = true;
 
 out:
-	process_lock();
 	fclose(proc_cgroups);
-	process_unlock();
 	free(line);
 	return bret;
 }
@@ -182,13 +176,11 @@ static bool find_cgroup_hierarchies(struct cgroup_meta_data *meta_data,
 	bool bret = false;
 	size_t hierarchy_capacity = 0;
 
-	process_lock();
 	proc_self_cgroup = fopen_cloexec("/proc/self/cgroup", "r");
 	/* if for some reason (because of setns() and pid namespace for example),
 	 * /proc/self is not valid, we try /proc/1/cgroup... */
 	if (!proc_self_cgroup)
 		proc_self_cgroup = fopen_cloexec("/proc/1/cgroup", "r");
-	process_unlock();
 	if (!proc_self_cgroup)
 		return false;
 
@@ -267,9 +259,7 @@ static bool find_cgroup_hierarchies(struct cgroup_meta_data *meta_data,
 	bret = true;
 
 out:
-	process_lock();
 	fclose(proc_self_cgroup);
-	process_unlock();
 	free(line);
 	return bret;
 }
@@ -287,13 +277,11 @@ static bool find_hierarchy_mountpts( struct cgroup_meta_data *meta_data, char **
 	size_t token_capacity = 0;
 	int r;
 
-	process_lock();
 	proc_self_mountinfo = fopen_cloexec("/proc/self/mountinfo", "r");
 	/* if for some reason (because of setns() and pid namespace for example),
 	 * /proc/self is not valid, we try /proc/1/cgroup... */
 	if (!proc_self_mountinfo)
 		proc_self_mountinfo = fopen_cloexec("/proc/1/mountinfo", "r");
-	process_unlock();
 	if (!proc_self_mountinfo)
 		return false;
 
@@ -398,9 +386,7 @@ static bool find_hierarchy_mountpts( struct cgroup_meta_data *meta_data, char **
 	bret = true;
 
 out:
-	process_lock();
 	fclose(proc_self_mountinfo);
-	process_unlock();
 	free(tokens);
 	free(line);
 	return bret;
@@ -1473,9 +1459,7 @@ struct cgroup_process_info *lxc_cgroup_process_info_getx(const char *proc_pid_cg
 	struct cgroup_process_info **cptr = &result;
 	struct cgroup_process_info *entry = NULL;
 
-	process_lock();
 	proc_pid_cgroup = fopen_cloexec(proc_pid_cgroup_str, "r");
-	process_unlock();
 	if (!proc_pid_cgroup)
 		return NULL;
 
@@ -1545,18 +1529,14 @@ struct cgroup_process_info *lxc_cgroup_process_info_getx(const char *proc_pid_cg
 		entry = NULL;
 	}
 
-	process_lock();
 	fclose(proc_pid_cgroup);
-	process_unlock();
 	free(line);
 	return result;
 
 out_error:
 	saved_errno = errno;
-	process_lock();
 	if (proc_pid_cgroup)
 		fclose(proc_pid_cgroup);
-	process_unlock();
 	lxc_cgroup_process_info_free(result);
 	lxc_cgroup_process_info_free(entry);
 	free(line);
@@ -1817,9 +1797,7 @@ bool cgroup_devices_has_allow_or_deny(struct lxc_handler *h, char *v, bool for_a
 		return false;
 	}
 
-	process_lock();
 	devices_list = fopen_cloexec(path, "r");
-	process_unlock();
 	if (!devices_list) {
 		free(path);
 		return false;
@@ -1839,9 +1817,7 @@ bool cgroup_devices_has_allow_or_deny(struct lxc_handler *h, char *v, bool for_a
 	}
 
 out:
-	process_lock();
 	fclose(devices_list);
-	process_unlock();
 	free(line);
 	free(path);
 	return ret;
@@ -1863,9 +1839,7 @@ int cgroup_recursive_task_count(const char *cgroup_path)
 	if (!dent_buf)
 		return -1;
 
-	process_lock();
 	d = opendir(cgroup_path);
-	process_unlock();
 	if (!d) {
 		free(dent_buf);
 		return 0;
@@ -1884,17 +1858,13 @@ int cgroup_recursive_task_count(const char *cgroup_path)
 			continue;
 		sub_path = lxc_string_join("/", parts, false);
 		if (!sub_path) {
-			process_lock();
 			closedir(d);
-			process_unlock();
 			free(dent_buf);
 			return -1;
 		}
 		r = stat(sub_path, &st);
 		if (r < 0) {
-			process_lock();
 			closedir(d);
-			process_unlock();
 			free(dent_buf);
 			free(sub_path);
 			return -1;
@@ -1910,9 +1880,7 @@ int cgroup_recursive_task_count(const char *cgroup_path)
 		}
 		free(sub_path);
 	}
-	process_lock();
 	closedir(d);
-	process_unlock();
 	free(dent_buf);
 
 	return n;
@@ -1925,9 +1893,7 @@ int count_lines(const char *fn)
 	size_t sz = 0;
 	int n = 0;
 
-	process_lock();
 	f = fopen_cloexec(fn, "r");
-	process_unlock();
 	if (!f)
 		return -1;
 
@@ -1935,15 +1901,14 @@ int count_lines(const char *fn)
 		n++;
 	}
 	free(line);
-	process_lock();
 	fclose(f);
-	process_unlock();
 	return n;
 }
 
 int handle_cgroup_settings(struct cgroup_mount_point *mp, char *cgroup_path)
 {
 	int r, saved_errno = 0;
+	char buf[2];
 
 	/* If this is the memory cgroup, we want to enforce hierarchy.
 	 * But don't fail if for some reason we can't.
@@ -1951,9 +1916,12 @@ int handle_cgroup_settings(struct cgroup_mount_point *mp, char *cgroup_path)
 	if (lxc_string_in_array("memory", (const char **)mp->hierarchy->subsystems)) {
 		char *cc_path = cgroup_to_absolute_path(mp, cgroup_path, "/memory.use_hierarchy");
 		if (cc_path) {
-			r = lxc_write_to_file(cc_path, "1", 1, false);
-			if (r < 0)
-				SYSERROR("failed to set memory.use_hiararchy to 1; continuing");
+			r = lxc_read_from_file(cc_path, buf, 1);
+			if (r < 1 || buf[0] != '1') {
+				r = lxc_write_to_file(cc_path, "1", 1, false);
+				if (r < 0)
+					SYSERROR("failed to set memory.use_hiararchy to 1; continuing");
+			}
 			free(cc_path);
 		}
 	}
@@ -1966,6 +1934,11 @@ int handle_cgroup_settings(struct cgroup_mount_point *mp, char *cgroup_path)
 		char *cc_path = cgroup_to_absolute_path(mp, cgroup_path, "/cgroup.clone_children");
 		if (!cc_path)
 			return -1;
+		r = lxc_read_from_file(cc_path, buf, 1);
+		if (r == 1 && buf[0] == '1') {
+			free(cc_path);
+			return 0;
+		}
 		r = lxc_write_to_file(cc_path, "1", 1, false);
 		saved_errno = errno;
 		free(cc_path);

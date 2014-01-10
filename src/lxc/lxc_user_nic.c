@@ -45,11 +45,12 @@
 #include <linux/rtnetlink.h>
 #include <linux/sockios.h>
 #include <sys/param.h>
+
 #include "config.h"
 #include "utils.h"
 #include "network.h"
 
-void usage(char *me, bool fail)
+static void usage(char *me, bool fail)
 {
 	fprintf(stderr, "Usage: %s pid type bridge nicname\n", me);
 	fprintf(stderr, " nicname is the name to use inside the container\n");
@@ -189,7 +190,7 @@ static bool nic_exists(char *nic)
 
 	ret = snprintf(path, MAXPATHLEN, "/sys/class/net/%s", nic);
 	if (ret < 0 || ret >= MAXPATHLEN) // should never happen!
-		return true;
+		return false;
 	ret = stat(path, &sb);
 	if (ret != 0)
 		return false;
@@ -266,20 +267,16 @@ out_del:
 
 /*
  * Get a new nic.
- * *dest will container the name (lxcuser-%d) which is attached
+ * *dest will container the name (vethXXXXXX) which is attached
  * on the host to the lxc bridge
  */
 static void get_new_nicname(char **dest, char *br, int pid, char **cnic)
 {
-	int i = 0;
-	// TODO - speed this up.  For large installations we won't
-	// want n stats for every nth container startup.
-	while (1) {
-		sprintf(*dest, "lxcuser-%d", i);
-		if (!nic_exists(*dest) && create_nic(*dest, br, pid, cnic))
-			return;
-		i++;
-	}
+	char template[IFNAMSIZ];
+	snprintf(template, sizeof(template), "vethXXXXXX");
+	*dest = lxc_mkifname(template);
+
+	create_nic(*dest, br, pid, cnic);
 }
 
 static bool get_nic_from_line(char *p, char **nic)
@@ -322,7 +319,7 @@ static bool cull_entries(int fd, char *me, char *t, char *br)
 	p = buf;
 	e = buf + len;
 	while ((p = find_line(p, e, me, t, br)) != NULL) {
-		struct entry_line *newe = realloc(entry_lines, n+1);
+		struct entry_line *newe = realloc(entry_lines, sizeof(*entry_lines)*(n+1));
 		if (!newe) {
 			free(entry_lines);
 			return false;
@@ -383,6 +380,9 @@ static bool get_nic_if_avail(int fd, char *me, int pid, char *intype, char *br, 
 
 	cull_entries(fd, me, intype, br);
 
+	if (allowed == 0)
+		return false;
+
 	fstat(fd, &sb);
 	len = sb.st_size;
 	if (len != 0) {
@@ -396,7 +396,6 @@ static bool get_nic_if_avail(int fd, char *me, int pid, char *intype, char *br, 
 		if (count >= allowed)
 			return false;
 	}
-
 
 	get_new_nicname(nicname, br, pid, cnic);
 	/* me  ' ' intype ' ' br ' ' *nicname + '\n' + '\0' */

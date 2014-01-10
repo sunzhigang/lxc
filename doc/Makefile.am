@@ -15,6 +15,7 @@ EXTRA_DIST = \
 if ENABLE_DOCBOOK
 man_MANS = \
 	lxc-attach.1 \
+	lxc-autostart.1 \
 	lxc-cgroup.1 \
 	lxc-checkconfig.1 \
 	lxc-checkpoint.1 \
@@ -35,10 +36,12 @@ man_MANS = \
 	lxc-stop.1 \
 	lxc-unfreeze.1 \
 	lxc-unshare.1 \
+	lxc-user-nic.1 \
 	lxc-version.1 \
 	lxc-wait.1 \
 	\
 	lxc.conf.5 \
+	lxc-usernet.5 \
 	\
 	lxc.7
 

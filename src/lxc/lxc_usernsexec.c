@@ -38,6 +38,7 @@
 #include <sched.h>
 #include <pwd.h>
 #include <grp.h>
+
 #include "config.h"
 #include "namespace.h"
 #include "utils.h"
@@ -126,7 +127,7 @@ struct id_map {
 	struct id_map *next;
 };
 
-struct id_map default_map = {
+static struct id_map default_map = {
 	.which = 'b',
 	.host_id = 100000,
 	.ns_id = 0,
@@ -258,13 +259,17 @@ static int map_child_uids(int pid, struct id_map *map)
 {
 	char **uidargs = NULL, **gidargs = NULL;
 	char **newuidargs = NULL, **newgidargs = NULL;
-	int i, nuargs = 2, ngargs = 2;
+	int i, nuargs = 2, ngargs = 2, ret = -1;
 	struct id_map *m;
 
 	uidargs = malloc(3 * sizeof(*uidargs));
-	gidargs = malloc(3 * sizeof(*gidargs));
-	if (uidargs == NULL || gidargs == NULL)
+	if (uidargs == NULL)
 		return -1;
+	gidargs = malloc(3 * sizeof(*gidargs));
+	if (gidargs == NULL) {
+		free(uidargs);
+		return -1;
+	}
 	uidargs[0] = malloc(10);
 	gidargs[0] = malloc(10);
 	uidargs[1] = malloc(21);
@@ -272,7 +277,7 @@ static int map_child_uids(int pid, struct id_map *map)
 	uidargs[2] = NULL;
 	gidargs[2] = NULL;
 	if (!uidargs[0] || !uidargs[1] || !gidargs[0] || !gidargs[1])
-		return -1;
+		goto out;
 	sprintf(uidargs[0], "newuidmap");
 	sprintf(gidargs[0], "newgidmap");
 	sprintf(uidargs[1], "%d", pid);
@@ -281,16 +286,14 @@ static int map_child_uids(int pid, struct id_map *map)
 		if (m->which == 'b' || m->which == 'u') {
 			nuargs += 3;
 			newuidargs = realloc(uidargs, (nuargs+1) * sizeof(*uidargs));
-			if (!newuidargs) {
-				free(uidargs);
-				return -1;
-			}
+			if (!newuidargs)
+				goto out;
 			uidargs = newuidargs;
 			uidargs[nuargs - 3] = malloc(21);
 			uidargs[nuargs - 2] = malloc(21);
 			uidargs[nuargs - 1] = malloc(21);
 			if (!uidargs[nuargs-3] || !uidargs[nuargs-2] || !uidargs[nuargs-1])
-				return -1;
+				goto out;
 			sprintf(uidargs[nuargs - 3], "%ld", m->ns_id);
 			sprintf(uidargs[nuargs - 2], "%ld", m->host_id);
 			sprintf(uidargs[nuargs - 1], "%ld", m->range);
@@ -299,16 +302,14 @@ static int map_child_uids(int pid, struct id_map *map)
 		if (m->which == 'b' || m->which == 'g') {
 			ngargs += 3;
 			newgidargs = realloc(gidargs, (ngargs+1) * sizeof(*gidargs));
-			if (!newgidargs){
-				free(gidargs);
-				return -1;
-			}
+			if (!newgidargs)
+				goto out;
 			gidargs = newgidargs;
 			gidargs[ngargs - 3] = malloc(21);
 			gidargs[ngargs - 2] = malloc(21);
 			gidargs[ngargs - 1] = malloc(21);
 			if (!gidargs[ngargs-3] || !gidargs[ngargs-2] || !gidargs[ngargs-1])
-				return -1;
+				goto out;
 			sprintf(gidargs[ngargs - 3], "%ld", m->ns_id);
 			sprintf(gidargs[ngargs - 2], "%ld", m->host_id);
 			sprintf(gidargs[ngargs - 1], "%ld", m->range);
@@ -316,17 +317,20 @@ static int map_child_uids(int pid, struct id_map *map)
 		}
 	}
 
+	ret = -2;
 	// exec newuidmap
 	if (nuargs > 2 && run_cmd(uidargs) != 0) {
 		fprintf(stderr, "Error mapping uids\n");
-		return -2;
+		goto out;
 	}
 	// exec newgidmap
 	if (ngargs > 2 && run_cmd(gidargs) != 0) {
 		fprintf(stderr, "Error mapping gids\n");
-		return -2;
+		goto out;
 	}
+	ret = 0;
 
+out:
 	for (i=0; i<nuargs; i++)
 		free(uidargs[i]);
 	for (i=0; i<ngargs; i++)
@@ -334,7 +338,7 @@ static int map_child_uids(int pid, struct id_map *map)
 	free(uidargs);
 	free(gidargs);
 
-    return 0;
+	return ret;
 }
 
 int main(int argc, char *argv[])
@@ -346,6 +350,7 @@ int main(int argc, char *argv[])
 	int ret;
 	int pid;
 	char *default_args[] = {"/bin/sh", NULL};
+	char buf[1];
 	int pipe1[2],  // child tells parent it has unshared
 	    pipe2[2];  // parent tells child it is mapped and may proceed
 
@@ -395,16 +400,16 @@ int main(int argc, char *argv[])
 			perror("unshare");
 			return 1;
 		}
-		ret = 1;
-		if (write(pipe1[1], &ret, 1) < 1) {
+		buf[0] = '1';
+		if (write(pipe1[1], buf, 1) < 1) {
 			perror("write pipe");
 			exit(1);
 		}
-		if (read(pipe2[0], &ret, 1) < 1) {
+		if (read(pipe2[0], buf, 1) < 1) {
 			perror("read pipe");
 			exit(1);
 		}
-		if (ret != 1) {
+		if (buf[0] != '1') {
 			fprintf(stderr, "parent had an error, child exiting\n");
 			exit(1);
 		}
@@ -416,17 +421,17 @@ int main(int argc, char *argv[])
 
 	close(pipe1[1]);
 	close(pipe2[0]);
-	if (read(pipe1[0], &ret, 1) < 1) {
+	if (read(pipe1[0], buf, 1) < 1) {
 		perror("read pipe");
 		exit(1);
 	}
 
-	ret = 1;
+	buf[0] = '1';
 	if (map_child_uids(pid, active_map)) {
 		fprintf(stderr, "error mapping child\n");
 		ret = 0;
 	}
-	if (write(pipe2[1], &ret, 1) < 0) {
+	if (write(pipe2[1], buf, 1) < 0) {
 		perror("write to pipe");
 		exit(1);
 	}

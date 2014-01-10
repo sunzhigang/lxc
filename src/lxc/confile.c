@@ -41,9 +41,8 @@
 #include "config.h"
 #include "confile.h"
 #include "utils.h"
-
-#include <lxc/log.h>
-#include <lxc/conf.h>
+#include "log.h"
+#include "conf.h"
 #include "network.h"
 
 #if HAVE_SYS_PERSONALITY_H
@@ -80,7 +79,8 @@ static int config_network_vlan_id(const char *, const char *, struct lxc_conf *)
 static int config_network_mtu(const char *, const char *, struct lxc_conf *);
 static int config_network_ipv4(const char *, const char *, struct lxc_conf *);
 static int config_network_ipv4_gateway(const char *, const char *, struct lxc_conf *);
-static int config_network_script(const char *, const char *, struct lxc_conf *);
+static int config_network_script_up(const char *, const char *, struct lxc_conf *);
+static int config_network_script_down(const char *, const char *, struct lxc_conf *);
 static int config_network_ipv6(const char *, const char *, struct lxc_conf *);
 static int config_network_ipv6_gateway(const char *, const char *, struct lxc_conf *);
 static int config_cap_drop(const char *, const char *, struct lxc_conf *);
@@ -90,7 +90,10 @@ static int config_seccomp(const char *, const char *, struct lxc_conf *);
 static int config_includefile(const char *, const char *, struct lxc_conf *);
 static int config_network_nic(const char *, const char *, struct lxc_conf *);
 static int config_autodev(const char *, const char *, struct lxc_conf *);
+static int config_haltsignal(const char *, const char *, struct lxc_conf *);
 static int config_stopsignal(const char *, const char *, struct lxc_conf *);
+static int config_start(const char *, const char *, struct lxc_conf *);
+static int config_group(const char *, const char *, struct lxc_conf *);
 
 static struct lxc_config_t config[] = {
 
@@ -123,8 +126,8 @@ static struct lxc_config_t config[] = {
 	{ "lxc.network.name",         config_network_name         },
 	{ "lxc.network.macvlan.mode", config_network_macvlan_mode },
 	{ "lxc.network.veth.pair",    config_network_veth_pair    },
-	{ "lxc.network.script.up",    config_network_script       },
-	{ "lxc.network.script.down",  config_network_script       },
+	{ "lxc.network.script.up",    config_network_script_up    },
+	{ "lxc.network.script.down",  config_network_script_down  },
 	{ "lxc.network.hwaddr",       config_network_hwaddr       },
 	{ "lxc.network.mtu",          config_network_mtu          },
 	{ "lxc.network.vlan.id",      config_network_vlan_id      },
@@ -140,15 +143,20 @@ static struct lxc_config_t config[] = {
 	{ "lxc.seccomp",              config_seccomp              },
 	{ "lxc.include",              config_includefile          },
 	{ "lxc.autodev",              config_autodev              },
+	{ "lxc.haltsignal",           config_haltsignal           },
 	{ "lxc.stopsignal",           config_stopsignal           },
+	{ "lxc.start.auto",           config_start                },
+	{ "lxc.start.delay",          config_start                },
+	{ "lxc.start.order",          config_start                },
+	{ "lxc.group",                config_group                },
 };
 
 struct signame {
 	int num;
-	char *name;
+	const char *name;
 };
 
-struct signame signames[] = {
+static const struct signame signames[] = {
 	{ SIGHUP,    "HUP" },
 	{ SIGINT,    "INT" },
 	{ SIGQUIT,   "QUIT" },
@@ -216,8 +224,12 @@ static int config_string_item(char **conf_item, const char *value)
 {
 	char *new_value;
 
-	if (!value || strlen(value) == 0)
+	if (!value || strlen(value) == 0) {
+		if (*conf_item)
+			free(*conf_item);
+		*conf_item = NULL;
 		return 0;
+	}
 
 	new_value = strdup(value);
 	if (!new_value) {
@@ -295,6 +307,9 @@ static int config_network_type(const char *key, const char *value,
 	struct lxc_netdev *netdev;
 	struct lxc_list *list;
 
+	if (!value || strlen(value) == 0)
+		return lxc_clear_config_network(lxc_conf);
+
 	netdev = malloc(sizeof(*netdev));
 	if (!netdev) {
 		SYSERROR("failed to allocate memory");
@@ -327,6 +342,8 @@ static int config_network_type(const char *key, const char *value,
 		netdev->type = LXC_NET_PHYS;
 	else if (!strcmp(value, "empty"))
 		netdev->type = LXC_NET_EMPTY;
+	else if (!strcmp(value, "none"))
+		netdev->type = LXC_NET_NONE;
 	else {
 		ERROR("invalid network type %s", value);
 		return -1;
@@ -399,6 +416,7 @@ extern int lxc_list_nicconfigs(struct lxc_conf *c, const char *key,
 		memset(retv, 0, inlen);
 
 	strprint(retv, inlen, "script.up\n");
+	strprint(retv, inlen, "script.down\n");
 	if (netdev->type != LXC_NET_EMPTY) {
 		strprint(retv, inlen, "flags\n");
 		strprint(retv, inlen, "link\n");
@@ -815,31 +833,28 @@ static int config_network_ipv6_gateway(const char *key, const char *value,
 	return 0;
 }
 
-static int config_network_script(const char *key, const char *value,
-				 struct lxc_conf *lxc_conf)
+static int config_network_script_up(const char *key, const char *value,
+				    struct lxc_conf *lxc_conf)
 {
 	struct lxc_netdev *netdev;
 
 	netdev = network_netdev(key, value, &lxc_conf->network);
 	if (!netdev)
-	return -1;
+ 		return -1;
 
-	char *copy = strdup(value);
-	if (!copy) {
-		SYSERROR("failed to dup string '%s'", value);
-		return -1;
-	}
-	if (strstr(key, "script.up") != NULL) {
-		netdev->upscript = copy;
-		return 0;
-	}
-	if (strcmp(key, "lxc.network.script.down") == 0) {
-		netdev->downscript = copy;
-		return 0;
-	}
-	SYSERROR("Unknown key: %s", key);
-	free(copy);
-	return -1;
+	return config_string_item(&netdev->upscript, value);
+}
+
+static int config_network_script_down(const char *key, const char *value,
+				      struct lxc_conf *lxc_conf)
+{
+	struct lxc_netdev *netdev;
+
+	netdev = network_netdev(key, value, &lxc_conf->network);
+	if (!netdev)
+ 		return -1;
+
+	return config_string_item(&netdev->downscript, value);
 }
 
 static int add_hook(struct lxc_conf *lxc_conf, int which, char *hook)
@@ -865,7 +880,12 @@ static int config_seccomp(const char *key, const char *value,
 static int config_hook(const char *key, const char *value,
 				 struct lxc_conf *lxc_conf)
 {
-	char *copy = strdup(value);
+	char *copy;
+	
+	if (!value || strlen(value) == 0)
+		return lxc_clear_hooks(lxc_conf, key);
+
+	copy = strdup(value);
 	if (!copy) {
 		SYSERROR("failed to dup string '%s'", value);
 		return -1;
@@ -910,6 +930,71 @@ static int config_pts(const char *key, const char *value,
 	lxc_conf->pts = maxpts;
 
 	return 0;
+}
+
+static int config_start(const char *key, const char *value,
+		      struct lxc_conf *lxc_conf)
+{
+	if(strcmp(key, "lxc.start.auto") == 0) {
+		lxc_conf->start_auto = atoi(value);
+		return 0;
+	}
+	else if (strcmp(key, "lxc.start.delay") == 0) {
+		lxc_conf->start_delay = atoi(value);
+		return 0;
+	}
+	else if (strcmp(key, "lxc.start.order") == 0) {
+		lxc_conf->start_order = atoi(value);
+		return 0;
+	}
+	SYSERROR("Unknown key: %s", key);
+	return -1;
+}
+
+static int config_group(const char *key, const char *value,
+		      struct lxc_conf *lxc_conf)
+{
+	char *groups, *groupptr, *sptr, *token;
+	struct lxc_list *grouplist;
+	int ret = -1;
+
+	if (!strlen(value))
+		return lxc_clear_groups(lxc_conf);
+
+	groups = strdup(value);
+	if (!groups) {
+		SYSERROR("failed to dup '%s'", value);
+		return -1;
+	}
+
+	/* in case several groups are specified in a single line
+	 * split these groups in a single element for the list */
+	for (groupptr = groups;;groupptr = NULL) {
+                token = strtok_r(groupptr, " \t", &sptr);
+                if (!token) {
+			ret = 0;
+                        break;
+		}
+
+		grouplist = malloc(sizeof(*grouplist));
+		if (!grouplist) {
+			SYSERROR("failed to allocate groups list");
+			break;
+		}
+
+		grouplist->elem = strdup(token);
+		if (!grouplist->elem) {
+			SYSERROR("failed to dup '%s'", token);
+			free(grouplist);
+			break;
+		}
+
+		lxc_list_add_tail(&lxc_conf->groups, grouplist);
+        }
+
+	free(groups);
+
+	return ret;
 }
 
 static int config_tty(const char *key, const char *value,
@@ -1025,6 +1110,16 @@ static int rt_sig_num(const char *signame)
 	return sig_n;
 }
 
+static const char *sig_name(int signum) {
+	int n;
+
+	for (n = 0; n < sizeof(signames) / sizeof((signames)[0]); n++) {
+		if (n == signames[n].num)
+			return signames[n].name;
+	}
+	return "";
+}
+
 static int sig_parse(const char *signame) {
 	int n;
 
@@ -1040,6 +1135,18 @@ static int sig_parse(const char *signame) {
 		}
 	}
 	return -1;
+}
+
+static int config_haltsignal(const char *key, const char *value,
+			     struct lxc_conf *lxc_conf)
+{
+	int sig_n = sig_parse(value);
+
+	if (sig_n < 0)
+		return -1;
+	lxc_conf->haltsignal = sig_n;
+
+	return 0;
 }
 
 static int config_stopsignal(const char *key, const char *value,
@@ -1061,6 +1168,9 @@ static int config_cgroup(const char *key, const char *value,
 	char *subkey;
 	struct lxc_list *cglist = NULL;
 	struct lxc_cgroup *cgelem = NULL;
+
+	if (!value || strlen(value) == 0)
+		return lxc_clear_cgroups(lxc_conf, key);
 
 	subkey = strstr(key, token);
 
@@ -1122,6 +1232,9 @@ static int config_idmap(const char *key, const char *value, struct lxc_conf *lxc
 	unsigned long hostid, nsid, range;
 	char type;
 	int ret;
+
+	if (!value || strlen(value) == 0)
+		return lxc_clear_idmaps(lxc_conf);
 
 	subkey = strstr(key, token);
 
@@ -1250,6 +1363,9 @@ static int config_mount(const char *key, const char *value,
 	char *mntelem;
 	struct lxc_list *mntlist;
 
+	if (!value || strlen(value) == 0)
+		return lxc_clear_mount_entries(lxc_conf);
+
 	subkey = strstr(key, token);
 
 	if (!subkey) {
@@ -1294,7 +1410,7 @@ static int config_cap_keep(const char *key, const char *value,
 	int ret = -1;
 
 	if (!strlen(value))
-		return -1;
+		return lxc_clear_config_keepcaps(lxc_conf);
 
 	keepcaps = strdup(value);
 	if (!keepcaps) {
@@ -1340,7 +1456,7 @@ static int config_cap_drop(const char *key, const char *value,
 	int ret = -1;
 
 	if (!strlen(value))
-		return -1;
+		return lxc_clear_config_caps(lxc_conf);
 
 	dropcaps = strdup(value);
 	if (!dropcaps) {
@@ -1494,7 +1610,7 @@ out:
 	return ret;
 }
 
-int lxc_config_readline(char *buffer, struct lxc_conf *conf)
+static int lxc_config_readline(char *buffer, struct lxc_conf *conf)
 {
 	return parse_line(buffer, conf);
 }
@@ -1707,6 +1823,22 @@ static int lxc_get_item_hooks(struct lxc_conf *c, char *retv, int inlen,
 	return fulllen;
 }
 
+static int lxc_get_item_groups(struct lxc_conf *c, char *retv, int inlen)
+{
+	int len, fulllen = 0;
+	struct lxc_list *it;
+
+	if (!retv)
+		inlen = 0;
+	else
+		memset(retv, 0, inlen);
+
+	lxc_list_for_each(it, &c->groups) {
+		strprint(retv, inlen, "%s\n", (char *)it->elem);
+	}
+	return fulllen;
+}
+
 static int lxc_get_item_cap_drop(struct lxc_conf *c, char *retv, int inlen)
 {
 	int len, fulllen = 0;
@@ -1757,7 +1889,7 @@ static int lxc_get_mount_entries(struct lxc_conf *c, char *retv, int inlen)
 
 /*
  * lxc.network.0.XXX, where XXX can be: name, type, link, flags, type,
- * macvlan.mode, veth.pair, vlan, ipv4, ipv6, upscript, hwaddr, mtu,
+ * macvlan.mode, veth.pair, vlan, ipv4, ipv6, script.up, hwaddr, mtu,
  * ipv4_gateway, ipv6_gateway.  ipvX_gateway can return 'auto' instead
  * of an address.  ipv4 and ipv6 return lists (newline-separated).
  * things like veth.pair return '' if invalid (i.e. if called for vlan
@@ -1793,9 +1925,12 @@ static int lxc_get_item_nic(struct lxc_conf *c, char *retv, int inlen,
 	} else if (strcmp(p1, "flags") == 0) {
 		if (netdev->flags & IFF_UP)
 			strprint(retv, inlen, "up");
-	} else if (strcmp(p1, "upscript") == 0) {
+	} else if (strcmp(p1, "script.up") == 0) {
 		if (netdev->upscript)
 			strprint(retv, inlen, "%s", netdev->upscript);
+	} else if (strcmp(p1, "script.down") == 0) {
+		if (netdev->downscript)
+			strprint(retv, inlen, "%s", netdev->downscript);
 	} else if (strcmp(p1, "hwaddr") == 0) {
 		if (netdev->hwaddr)
 			strprint(retv, inlen, "%s", netdev->hwaddr);
@@ -1927,6 +2062,14 @@ int lxc_get_config_item(struct lxc_conf *c, const char *key, char *retv,
 		return lxc_get_item_network(c, retv, inlen);
 	else if (strncmp(key, "lxc.network.", 12) == 0)
 		return lxc_get_item_nic(c, retv, inlen, key + 12);
+	else if (strcmp(key, "lxc.start.auto") == 0)
+		return lxc_get_conf_int(c, retv, inlen, c->start_auto);
+	else if (strcmp(key, "lxc.start.delay") == 0)
+		return lxc_get_conf_int(c, retv, inlen, c->start_delay);
+	else if (strcmp(key, "lxc.start.order") == 0)
+		return lxc_get_conf_int(c, retv, inlen, c->start_order);
+	else if (strcmp(key, "lxc.group") == 0)
+		return lxc_get_item_groups(c, retv, inlen);
 	else return -1;
 
 	if (!v)
@@ -1952,6 +2095,8 @@ int lxc_clear_config_item(struct lxc_conf *c, const char *key)
 		return lxc_clear_mount_entries(c);
 	else if (strncmp(key, "lxc.hook", 8) == 0)
 		return lxc_clear_hooks(c, key);
+	else if (strncmp(key, "lxc.group", 9) == 0)
+		return lxc_clear_groups(c);
 
 	return -1;
 }
@@ -1998,6 +2143,10 @@ void write_config(FILE *fout, struct lxc_conf *c)
 		fprintf(fout, "lxc.pts = %d\n", c->pts);
 	if (c->ttydir)
 		fprintf(fout, "lxc.devttydir = %s\n", c->ttydir);
+	if (c->haltsignal)
+		fprintf(fout, "lxc.haltsignal = SIG%s\n", sig_name(c->haltsignal));
+	if (c->stopsignal)
+		fprintf(fout, "lxc.stopsignal = SIG%s\n", sig_name(c->stopsignal));
 	#if HAVE_SYS_PERSONALITY_H
 	switch(c->personality) {
 	case PER_LINUX32: fprintf(fout, "lxc.arch = x86\n"); break;
@@ -2048,6 +2197,8 @@ void write_config(FILE *fout, struct lxc_conf *c)
 		}
 		if (n->upscript)
 			fprintf(fout, "lxc.network.script.up = %s\n", n->upscript);
+		if (n->downscript)
+			fprintf(fout, "lxc.network.script.down = %s\n", n->downscript);
 		if (n->hwaddr)
 			fprintf(fout, "lxc.network.hwaddr = %s\n", n->hwaddr);
 		if (n->mtu)
@@ -2075,7 +2226,7 @@ void write_config(FILE *fout, struct lxc_conf *c)
 		lxc_list_for_each(it2, &n->ipv6) {
 			struct lxc_inet6dev *i = it2->elem;
 			char buf[INET6_ADDRSTRLEN];
-			inet_ntop(AF_INET, &i->addr, buf, sizeof(buf));
+			inet_ntop(AF_INET6, &i->addr, buf, sizeof(buf));
 			fprintf(fout, "lxc.network.ipv6 = %s\n", buf);
 		}
 	}

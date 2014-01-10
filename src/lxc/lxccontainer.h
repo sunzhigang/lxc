@@ -22,24 +22,32 @@
 
 #ifndef __LXC_CONTAINER_H
 #define __LXC_CONTAINER_H
-#include "lxclock.h"
-#include "attach_options.h"
-#include <stdlib.h>
 #include <malloc.h>
-
+#include <semaphore.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+#include <lxc/attach_options.h>
+
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
 #define LXC_CLONE_KEEPNAME        (1 << 0) /*!< Do not edit the rootfs to change the hostname */
-#define LXC_CLONE_COPYHOOKS       (1 << 1) /*!< Copy all hooks into the container directory */
-#define LXC_CLONE_KEEPMACADDR     (1 << 2) /*!< Do not change the MAC address on network interfaces */
-#define LXC_CLONE_SNAPSHOT        (1 << 3) /*!< Snapshot the original filesystem(s) */
-#define LXC_CLONE_MAXFLAGS        (1 << 4) /*!< Number of \c LXC_CLONE_* flags */
+#define LXC_CLONE_KEEPMACADDR     (1 << 1) /*!< Do not change the MAC address on network interfaces */
+#define LXC_CLONE_SNAPSHOT        (1 << 2) /*!< Snapshot the original filesystem(s) */
+#define LXC_CLONE_KEEPBDEVTYPE    (1 << 3) /*!< Use the same bdev type */
+#define LXC_CLONE_MAYBE_SNAPSHOT  (1 << 4) /*!< Snapshot only if bdev supports it, else copy */
+#define LXC_CLONE_MAXFLAGS        (1 << 5) /*!< Number of \c LXC_CLONE_* flags */
 #define LXC_CREATE_QUIET          (1 << 0) /*!< Redirect \c stdin to \c /dev/zero and \c stdout and \c stderr to \c /dev/null */
 #define LXC_CREATE_MAXFLAGS       (1 << 1) /*!< Number of \c LXC_CREATE* flags */
 
 struct bdev_specs;
 
 struct lxc_snapshot;
+
+struct lxc_lock;
 
 /*!
  * An LXC container.
@@ -325,6 +333,16 @@ struct lxc_container {
 			struct bdev_specs *specs, int flags, ...);
 
 	/*!
+	 * \brief Rename a container
+	 *
+	 * \param c Container.
+	 * \param newname New name to be used for the container.
+	 *
+	 * \return \c true on success, else \c false.
+	 */
+	bool (*rename)(struct lxc_container *c, const char *newname);
+
+	/*!
 	 * \brief Request the container reboot by sending it \c SIGINT.
 	 *
 	 * \param c Container.
@@ -435,7 +453,7 @@ struct lxc_container {
 	 * \note The returned array is allocated, so the caller must free it.
 	 * \note The returned array is terminated with a \c NULL entry.
 	 */
-	char** (*get_ips)(struct lxc_container *c, char* interface, char* family, int scope);
+	char** (*get_ips)(struct lxc_container *c, const char* interface, const char* family, int scope);
 
 	/*!
 	 * \brief Retrieve the specified cgroup subsystem value for the container.
@@ -505,7 +523,6 @@ struct lxc_container {
 	 *  (XXX: should we use the default instead?)
 	 * \param flags Additional \c LXC_CLONE* flags to change the cloning behaviour:
 	 *  - \ref LXC_CLONE_KEEPNAME
-	 *  - \ref LXC_CLONE_COPYHOOKS
 	 *  - \ref LXC_CLONE_KEEPMACADDR
 	 *  - \ref LXC_CLONE_SNAPSHOT
 	 * \param bdevtype Optionally force the cloned bdevtype to a specified plugin.
@@ -527,7 +544,7 @@ struct lxc_container {
 	 */
 	struct lxc_container *(*clone)(struct lxc_container *c, const char *newname,
 			const char *lxcpath, int flags, const char *bdevtype,
-			const char *bdevdata, unsigned long newsize, char **hookargs);
+			const char *bdevdata, uint64_t newsize, char **hookargs);
 
 	/*!
 	 * \brief Allocate a console tty for the container.
@@ -627,7 +644,7 @@ struct lxc_container {
 	 *
 	 * \note \p commentfile may be \c NULL but this is discouraged.
 	 */
-	int (*snapshot)(struct lxc_container *c, char *commentfile);
+	int (*snapshot)(struct lxc_container *c, const char *commentfile);
 
 	/*!
 	 * \brief Obtain a list of container snapshots.
@@ -660,7 +677,7 @@ struct lxc_container {
 	 *  (representing \c /var/lib/lxcsnaps/c1/snap0). If \p newname is \p c2,
 	 *  then \c snap0 will be copied to \c /var/lib/lxc/c2.
 	 */
-	bool (*snapshot_restore)(struct lxc_container *c, char *snapname, char *newname);
+	bool (*snapshot_restore)(struct lxc_container *c, const char *snapname, const char *newname);
 
 	/*!
 	 * \brief Destroy the specified snapshot.
@@ -670,7 +687,7 @@ struct lxc_container {
 	 *
 	 * \return \c true on success, else \c false.
 	 */
-	bool (*snapshot_destroy)(struct lxc_container *c, char *snapname);
+	bool (*snapshot_destroy)(struct lxc_container *c, const char *snapname);
 
 	/*!
 	 * \brief Determine if the caller may control the container.
@@ -693,7 +710,7 @@ struct lxc_container {
 	 *
 	 * \return \c true on success, else \c false.
 	 */
-	bool (*add_device_node)(struct lxc_container *c, char *src_path, char *dest_path);
+	bool (*add_device_node)(struct lxc_container *c, const char *src_path, const char *dest_path);
 
 	/*!
 	 * \brief Remove specified device from the container.
@@ -705,7 +722,7 @@ struct lxc_container {
 	 *
 	 * \return \c true on success, else \c false.
 	 */
-	bool (*remove_device_node)(struct lxc_container *c, char *src_path, char *dest_path);
+	bool (*remove_device_node)(struct lxc_container *c, const char *src_path, const char *dest_path);
 };
 
 /*!
@@ -861,5 +878,9 @@ int list_active_containers(const char *lxcpath, char ***names, struct lxc_contai
  * \note \p names and \p cret must be freed by the caller.
  */
 int list_all_containers(const char *lxcpath, char ***names, struct lxc_container ***cret);
+
+#ifdef  __cplusplus
+}
+#endif
 
 #endif

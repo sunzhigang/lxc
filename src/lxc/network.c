@@ -30,6 +30,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -48,7 +49,12 @@
 #include "nl.h"
 #include "network.h"
 #include "conf.h"
-#include "lxclock.h"
+
+#if HAVE_IFADDRS_H
+#include <ifaddrs.h>
+#else
+#include <../include/ifaddrs.h>
+#endif
 
 #ifndef IFLA_LINKMODE
 #  define IFLA_LINKMODE 17
@@ -134,9 +140,10 @@ int lxc_netdev_move_by_name(char *ifname, pid_t pid)
 {
 	int index;
 
-	index = if_nametoindex(ifname);
 	if (!ifname)
 		return -EINVAL;
+
+	index = if_nametoindex(ifname);
 
 	return lxc_netdev_move_by_index(index, pid);
 }
@@ -581,18 +588,14 @@ static int proc_sys_net_write(const char *path, const char *value)
 {
 	int fd, err = 0;
 
-	process_lock();
 	fd = open(path, O_WRONLY);
-	process_unlock();
 	if (fd < 0)
 		return -errno;
 
 	if (write(fd, value, strlen(value)) < 0)
 		err = -errno;
 
-	process_lock();
 	close(fd);
-	process_unlock();
 	return err;
 }
 
@@ -1074,9 +1077,7 @@ int lxc_bridge_attach(const char *bridge, const char *ifname)
 	if (!index)
 		return -EINVAL;
 
-	process_lock();
 	fd = socket(AF_INET, SOCK_STREAM, 0);
-	process_unlock();
 	if (fd < 0)
 		return -errno;
 
@@ -1084,16 +1085,14 @@ int lxc_bridge_attach(const char *bridge, const char *ifname)
 	ifr.ifr_name[IFNAMSIZ-1] = '\0';
 	ifr.ifr_ifindex = index;
 	err = ioctl(fd, SIOCBRADDIF, &ifr);
-	process_lock();
 	close(fd);
-	process_unlock();
 	if (err)
 		err = -errno;
 
 	return err;
 }
 
-static char* lxc_network_types[LXC_NET_MAXCONFTYPE + 1] = {
+static const char* const lxc_network_types[LXC_NET_MAXCONFTYPE + 1] = {
 	[LXC_NET_VETH]    = "veth",
 	[LXC_NET_MACVLAN] = "macvlan",
 	[LXC_NET_VLAN]    = "vlan",
@@ -1108,32 +1107,90 @@ const char *lxc_net_type_to_str(int type)
 	return lxc_network_types[type];
 }
 
+static const char padchar[] =
+"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+char *lxc_mkifname(char *template)
+{
+	char *name = NULL;
+	int i = 0;
+	FILE *urandom;
+	unsigned int seed;
+	struct ifaddrs *ifaddr, *ifa;
+	int ifexists = 0;
+
+	/* Get all the network interfaces */
+	getifaddrs(&ifaddr);
+
+	/* Initialize the random number generator */
+	urandom = fopen ("/dev/urandom", "r");
+	if (urandom != NULL) {
+		if (fread (&seed, sizeof(seed), 1, urandom) <= 0)
+			seed = time(0);
+		fclose(urandom);
+	}
+	else
+		seed = time(0);
+
+#ifndef HAVE_RAND_R
+	srand(seed);
+#endif
+
+	/* Generate random names until we find one that doesn't exist */
+	while(1) {
+		ifexists = 0;
+		name = strdup(template);
+
+		if (name == NULL)
+			return NULL;
+
+		for (i = 0; i < strlen(name); i++) {
+			if (name[i] == 'X') {
+#ifdef HAVE_RAND_R
+				name[i] = padchar[rand_r(&seed) % (strlen(padchar) - 1)];
+#else
+				name[i] = padchar[rand() % (strlen(padchar) - 1)];
+#endif
+			}
+		}
+
+		for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+			if (strcmp(ifa->ifa_name, name) == 0) {
+				ifexists = 1;
+				break;
+			}
+		}
+
+		if (ifexists == 0)
+			break;
+
+		free(name);
+	}
+
+	freeifaddrs(ifaddr);
+	return name;
+}
+
 int setup_private_host_hw_addr(char *veth1)
 {
 	struct ifreq ifr;
 	int err;
 	int sockfd;
 
-	process_lock();
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	process_unlock();
 	if (sockfd < 0)
 		return -errno;
 
 	snprintf((char *)ifr.ifr_name, IFNAMSIZ, "%s", veth1);
 	err = ioctl(sockfd, SIOCGIFHWADDR, &ifr);
 	if (err < 0) {
-		process_lock();
 		close(sockfd);
-		process_unlock();
 		return -errno;
 	}
 
 	ifr.ifr_hwaddr.sa_data[0] = 0xfe;
 	err = ioctl(sockfd, SIOCSIFHWADDR, &ifr);
-	process_lock();
 	close(sockfd);
-	process_unlock();
 	if (err < 0)
 		return -errno;
 

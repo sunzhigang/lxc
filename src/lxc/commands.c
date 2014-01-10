@@ -33,20 +33,18 @@
 #include <malloc.h>
 #include <stdlib.h>
 
-#include <lxc/log.h>
-#include <lxc/lxc.h>
-#include <lxc/conf.h>
-#include <lxc/start.h>	/* for struct lxc_handler */
-#include <lxc/utils.h>
-#include <lxc/cgroup.h>
-
+#include "log.h"
+#include "lxc.h"
+#include "conf.h"
+#include "start.h"	/* for struct lxc_handler */
+#include "utils.h"
+#include "cgroup.h"
 #include "commands.h"
 #include "console.h"
 #include "confile.h"
 #include "mainloop.h"
 #include "af_unix.h"
 #include "config.h"
-#include "lxclock.h"
 
 /*
  * This file provides the different functions for clients to
@@ -99,7 +97,7 @@ static int fill_sock_name(char *path, int len, const char *name,
 
 static const char *lxc_cmd_str(lxc_cmd_t cmd)
 {
-	static const char *cmdname[LXC_CMD_MAX] = {
+	static const char * const cmdname[LXC_CMD_MAX] = {
 		[LXC_CMD_CONSOLE]         = "console",
 		[LXC_CMD_STOP]            = "stop",
 		[LXC_CMD_GET_STATE]       = "get_state",
@@ -247,6 +245,8 @@ static int lxc_cmd(const char *name, struct lxc_cmd_rr *cmd, int *stopped,
 	int len;
 	int stay_connected = cmd->req.cmd == LXC_CMD_CONSOLE;
 
+	*stopped = 0;
+
 	len = sizeof(path)-1;
 	if (fill_sock_name(offset, len, name, lxcpath))
 		return -1;
@@ -333,7 +333,7 @@ int lxc_try_cmd(const char *name, const char *lxcpath)
  */
 pid_t lxc_cmd_get_init_pid(const char *name, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_GET_INIT_PID },
 	};
@@ -363,7 +363,7 @@ static int lxc_cmd_get_init_pid_callback(int fd, struct lxc_cmd_req *req,
  */
 int lxc_cmd_get_clone_flags(const char *name, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_GET_CLONE_FLAGS },
 	};
@@ -398,7 +398,7 @@ static int lxc_cmd_get_clone_flags_callback(int fd, struct lxc_cmd_req *req,
 char *lxc_cmd_get_cgroup_path(const char *name, const char *lxcpath,
 	const char *subsystem)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = {
 			.cmd = LXC_CMD_GET_CGROUP,
@@ -458,7 +458,7 @@ static int lxc_cmd_get_cgroup_callback(int fd, struct lxc_cmd_req *req,
 char *lxc_cmd_get_config_item(const char *name, const char *item,
 			      const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_GET_CONFIG_ITEM,
 			 .data = item,
@@ -512,7 +512,7 @@ out:
  */
 lxc_state_t lxc_cmd_get_state(const char *name, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_GET_STATE }
 	};
@@ -553,7 +553,7 @@ static int lxc_cmd_get_state_callback(int fd, struct lxc_cmd_req *req,
  */
 int lxc_cmd_stop(const char *name, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_STOP },
 	};
@@ -618,7 +618,7 @@ static int lxc_cmd_stop_callback(int fd, struct lxc_cmd_req *req,
  */
 int lxc_cmd_console_winch(const char *name, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_CONSOLE_WINCH },
 	};
@@ -652,7 +652,7 @@ static int lxc_cmd_console_winch_callback(int fd, struct lxc_cmd_req *req,
  */
 int lxc_cmd_console(const char *name, int *ttynum, int *fd, const char *lxcpath)
 {
-	int ret, stopped = 0;
+	int ret, stopped;
 	struct lxc_cmd_console_rsp_data *rspdata;
 	struct lxc_cmd_rr cmd = {
 		.req = { .cmd = LXC_CMD_CONSOLE, .data = INT_TO_PTR(*ttynum) },
@@ -747,12 +747,11 @@ static void lxc_cmd_fd_cleanup(int fd, struct lxc_handler *handler,
 {
 	lxc_console_free(handler->conf, fd);
 	lxc_mainloop_del_handler(descr, fd);
-	process_lock();
 	close(fd);
-	process_unlock();
 }
 
-static int lxc_cmd_handler(int fd, void *data, struct lxc_epoll_descr *descr)
+static int lxc_cmd_handler(int fd, uint32_t events, void *data,
+			   struct lxc_epoll_descr *descr)
 {
 	int ret;
 	struct lxc_cmd_req req;
@@ -816,13 +815,12 @@ out_close:
 	goto out;
 }
 
-static int lxc_cmd_accept(int fd, void *data, struct lxc_epoll_descr *descr)
+static int lxc_cmd_accept(int fd, uint32_t events, void *data,
+			  struct lxc_epoll_descr *descr)
 {
 	int opt = 1, ret = -1, connection;
 
-	process_lock();
 	connection = accept(fd, NULL, 0);
-	process_unlock();
 	if (connection < 0) {
 		SYSERROR("failed to accept connection");
 		return -1;
@@ -849,9 +847,7 @@ out:
 	return ret;
 
 out_close:
-	process_lock();
 	close(connection);
-	process_unlock();
 	goto out;
 }
 
@@ -880,9 +876,7 @@ int lxc_cmd_init(const char *name, struct lxc_handler *handler,
 
 	if (fcntl(fd, F_SETFD, FD_CLOEXEC)) {
 		SYSERROR("failed to set sigfd to close-on-exec");
-		process_lock();
 		close(fd);
-		process_unlock();
 		return -1;
 	}
 
@@ -899,9 +893,7 @@ int lxc_cmd_mainloop_add(const char *name,
 	ret = lxc_mainloop_add_handler(descr, fd, lxc_cmd_accept, handler);
 	if (ret) {
 		ERROR("failed to add handler for command socket");
-		process_lock();
 		close(fd);
-		process_unlock();
 	}
 
 	return ret;

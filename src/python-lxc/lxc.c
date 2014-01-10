@@ -25,9 +25,9 @@
 #include <Python.h>
 #include "structmember.h"
 #include <lxc/lxccontainer.h>
-#include <lxc/utils.h>
-#include <lxc/namespace.h>
-#include <lxc/confile.h>
+#include "lxc/utils.h"
+#include "lxc/namespace.h"
+#include "lxc/confile.h"
 #include <stdio.h>
 #include <sys/wait.h>
 
@@ -1733,7 +1733,6 @@ PyInit__lxc(void)
     PYLXC_EXPORT_CONST(LXC_ATTACH_SET_PERSONALITY);
 
     /* clone: clone flags */
-    PYLXC_EXPORT_CONST(LXC_CLONE_COPYHOOKS);
     PYLXC_EXPORT_CONST(LXC_CLONE_KEEPMACADDR);
     PYLXC_EXPORT_CONST(LXC_CLONE_KEEPNAME);
     PYLXC_EXPORT_CONST(LXC_CLONE_SNAPSHOT);

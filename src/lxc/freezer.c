@@ -34,10 +34,8 @@
 #include "error.h"
 #include "state.h"
 #include "monitor.h"
-#include "lxclock.h"
-
-#include <lxc/log.h>
-#include <lxc/cgroup.h>
+#include "log.h"
+#include "cgroup.h"
 
 lxc_log_define(lxc_freezer, lxc);
 
@@ -53,9 +51,7 @@ static int do_unfreeze(const char *nsgroup, int freeze, const char *name, const 
 		return -1;
 	}
 
-	process_lock();
 	fd = open(freezer, O_RDWR);
-	process_unlock();
 	if (fd < 0) {
 		SYSERROR("failed to open freezer at '%s'", nsgroup);
 		return -1;
@@ -117,9 +113,7 @@ static int do_unfreeze(const char *nsgroup, int freeze, const char *name, const 
 	}
 
 out:
-	process_lock();
 	close(fd);
-	process_unlock();
 	return ret;
 }
 
